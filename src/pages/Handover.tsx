@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronRight, Clock, AlertTriangle, ClipboardList, UserCheck } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ChevronRight, Clock, AlertTriangle, ClipboardList, UserCheck, HeartPulse, Pill, AlertCircle } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
-import { fetchCurrentShift, fetchHospitalizations, fetchOrders, handoverShift, fetchStaff } from '@/lib/api'
-import type { NursingRecord, Order, Hospitalization } from 'shared/types'
+import {
+  fetchCurrentShift, fetchHospitalizations, fetchOrders, handoverShift, fetchStaff,
+  fetchHandoverChecklist, fetchMedicationTasks,
+} from '@/lib/api'
+import type { NursingRecord, Order, Hospitalization, HandoverChecklist, MedicationTask } from 'shared/types'
 
 interface ShiftData {
   id: string
@@ -19,12 +23,15 @@ export default function Handover() {
   const [shift, setShift] = useState<ShiftData | null>(null)
   const [hospitalizations, setHospitalizations] = useState<Hospitalization[]>([])
   const [allOrders, setAllOrders] = useState<Order[]>([])
+  const [checklist, setChecklist] = useState<HandoverChecklist | null>(null)
+  const [pendingMedTasks, setPendingMedTasks] = useState<MedicationTask[]>([])
   const [loading, setLoading] = useState(true)
   const [notes, setNotes] = useState('')
   const [nextNurseId, setNextNurseId] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
+  const [showForceConfirm, setShowForceConfirm] = useState(false)
 
   const nurses = staffList.filter((s) => s.role === 'nurse')
 
@@ -48,6 +55,14 @@ export default function Handover() {
         setHospitalizations(hosps)
         if (Array.isArray(s) && s.length > 0) setStaffList(s)
         await loadOrders(hosps)
+        if (shiftData?.id) {
+          const [cl, tasks] = await Promise.all([
+            fetchHandoverChecklist(shiftData.id),
+            fetchMedicationTasks('pending'),
+          ])
+          setChecklist(cl)
+          setPendingMedTasks(tasks)
+        }
       } catch {
         setError('获取班次信息失败')
       } finally {
@@ -62,7 +77,7 @@ export default function Handover() {
 
   const petNameMap = new Map(hospitalizations.map((h) => [h.id, h.petName]))
 
-  const handleHandover = async () => {
+  const handleHandover = async (force = false) => {
     if (!shift || !nextNurseId) return
     const nurseOffDutyId = currentStaff?.id || staffList.find(s => s.role === 'nurse')?.id
     if (!nurseOffDutyId) return
@@ -73,9 +88,15 @@ export default function Handover() {
         nurseOffDuty: nurseOffDutyId,
         nurseOnDuty: nextNurseId,
         handoverNotes: notes,
+        forceHandover: force,
       })
       setDone(true)
     } catch (e: unknown) {
+      const err = e as any
+      if (err?.extra?.checklist) {
+        setChecklist(err.extra.checklist)
+        setShowForceConfirm(true)
+      }
       setError(e instanceof Error ? e.message : '交接失败')
     } finally {
       setSubmitting(false)
@@ -169,6 +190,89 @@ export default function Handover() {
               )}
             </div>
 
+            {checklist && checklist.criticalObservations.missingCount > 0 && (
+              <div>
+                <h3 className="mb-2 flex items-center gap-1 text-sm font-semibold text-red-700">
+                  <HeartPulse size={14} fill="currentColor" />
+                  本班重症观察漏记（{checklist.criticalObservations.missingCount}只）
+                </h3>
+                <div className="space-y-2">
+                  {checklist.criticalObservations.missingPets.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-md border-l-4 border-l-red-600 bg-red-50 px-3 py-2"
+                    >
+                      <p className="text-sm font-medium text-red-800 flex items-center gap-1">
+                        <AlertCircle size={12} />{p.petName}
+                      </p>
+                      <p className="text-xs text-red-600">本班次未填写重症观察记录</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {checklist && checklist.previousShiftMissing && checklist.previousShiftMissing.missingCount > 0 && (
+              <div>
+                <h3 className="mb-2 flex items-center gap-1 text-sm font-semibold text-amber-700">
+                  <HeartPulse size={14} fill="currentColor" />
+                  上班次重症观察未补录（{checklist.previousShiftMissing.missingCount}只）
+                </h3>
+                <div className="space-y-2">
+                  {checklist.previousShiftMissing.missingPets.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-md border-l-4 border-l-amber-500 bg-amber-50 px-3 py-2 flex items-center justify-between"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-amber-800 flex items-center gap-1">
+                          <AlertCircle size={12} />{p.petName}
+                        </p>
+                        <p className="text-xs text-amber-600">上班次重症观察未补录，须先补录再交接</p>
+                      </div>
+                      <Link
+                        to={`/nursing/${p.id}`}
+                        className="rounded-md bg-amber-600 px-3 py-1 text-xs text-white hover:bg-amber-700 whitespace-nowrap"
+                      >
+                        去补录
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+
+            {pendingMedTasks.length > 0 && (
+              <div>
+                <h3 className="mb-2 flex items-center gap-1 text-sm font-semibold text-amber-700">
+                  <Pill size={14} />
+                  待补药任务（{pendingMedTasks.length}项）
+                </h3>
+                <div className="space-y-2">
+                  {pendingMedTasks.map((t) => (
+                    <div
+                      key={t.id}
+                      className={`rounded-md border-l-4 px-3 py-2 ${
+                        t.priority === 'urgent'
+                          ? 'border-l-red-500 bg-red-50'
+                          : 'border-l-amber-500 bg-amber-50'
+                      }`}
+                    >
+                      <p className="text-sm font-medium text-slate-800">
+                        {petNameMap.get(t.hospitalizationId) ?? '未知宠物'}
+                        {t.priority === 'urgent' && (
+                          <span className="ml-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white">紧急</span>
+                        )}
+                      </p>
+                      <p className="text-xs text-slate-600">
+                        {t.medicationName}：需补 {t.pendingQuantity}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div>
               <h3 className="mb-2 flex items-center gap-1 text-sm font-semibold text-orange-600">
                 <ClipboardList size={14} />
@@ -235,6 +339,85 @@ export default function Handover() {
               确认接收以下事项，并承担后续护理责任：
             </p>
 
+            {checklist && checklist.criticalObservations.missingCount > 0 && (
+              <div>
+                <h4 className="mb-2 flex items-center gap-1 text-sm font-semibold text-red-700">
+                  <AlertCircle size={14} />
+                  本班重症观察漏记（{checklist.criticalObservations.missingCount}只）
+                </h4>
+                <div className="space-y-2">
+                  {checklist.criticalObservations.missingPets.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-md border-l-4 border-l-red-600 bg-red-50 px-3 py-2"
+                    >
+                      <p className="text-sm font-medium text-red-800">{p.petName}</p>
+                      <p className="text-xs text-red-600">本班次未填写重症观察记录</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {checklist && checklist.previousShiftMissing && checklist.previousShiftMissing.missingCount > 0 && (
+              <div>
+                <h4 className="mb-2 flex items-center gap-1 text-sm font-semibold text-amber-700">
+                  <AlertCircle size={14} />
+                  上班次重症观察未补录（{checklist.previousShiftMissing.missingCount}只）
+                </h4>
+                <div className="space-y-2">
+                  {checklist.previousShiftMissing.missingPets.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-md border-l-4 border-l-amber-500 bg-amber-50 px-3 py-2 flex items-center justify-between"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">{p.petName}</p>
+                        <p className="text-xs text-amber-600">须先补录上班次观察再交接</p>
+                      </div>
+                      <Link
+                        to={`/nursing/${p.id}`}
+                        className="rounded-md bg-amber-600 px-3 py-1 text-xs text-white hover:bg-amber-700 whitespace-nowrap"
+                      >
+                        去补录
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {pendingMedTasks.length > 0 && (
+              <div>
+                <h4 className="mb-2 flex items-center gap-1 text-sm font-semibold text-amber-700">
+                  <Pill size={14} />
+                  待补药任务（{pendingMedTasks.length}项）
+                </h4>
+                <div className="space-y-2">
+                  {pendingMedTasks.map((t) => (
+                    <div
+                      key={t.id}
+                      className={`rounded-md border-l-4 px-3 py-2 ${
+                        t.priority === 'urgent'
+                          ? 'border-l-red-500 bg-red-50'
+                          : 'border-l-amber-500 bg-amber-50'
+                      }`}
+                    >
+                      <p className="text-sm font-medium text-slate-800">
+                        {petNameMap.get(t.hospitalizationId) ?? '未知宠物'}
+                        {t.priority === 'urgent' && (
+                          <span className="ml-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white">紧急</span>
+                        )}
+                      </p>
+                      <p className="text-xs text-slate-600">
+                        {t.medicationName}：需补 {t.pendingQuantity}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div>
               <h4 className="mb-2 text-sm font-semibold text-red-600">异常事项</h4>
               {abnormalRecords.length === 0 ? (
@@ -257,7 +440,7 @@ export default function Handover() {
             </div>
 
             <div>
-              <h4 className="mb-2 text-sm font-semibold text-orange-600">未完成事项</h4>
+              <h4 className="mb-2 text-sm font-semibold text-orange-600">未完成医嘱</h4>
               {activeOrders.length === 0 ? (
                 <p className="text-sm text-slate-400">无</p>
               ) : (
@@ -277,13 +460,40 @@ export default function Handover() {
               )}
             </div>
 
-            <button
-              className="w-full rounded-lg bg-blue-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
-              disabled={!nextNurseId || submitting}
-              onClick={handleHandover}
-            >
-              {submitting ? '交接中...' : '确认交接'}
-            </button>
+            {showForceConfirm && (
+              <div className="rounded-md border-2 border-red-300 bg-red-50 p-3">
+                <p className="mb-2 text-sm font-medium text-red-700">
+                  存在未完成事项，确定强制交接吗？
+                </p>
+                <p className="mb-3 text-xs text-red-600">
+                  强制交接将跳过所有校验，由接班护士承担后续处理责任。
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowForceConfirm(false)}
+                    className="flex-1 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => handleHandover(true)}
+                    className="flex-1 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700"
+                  >
+                    确认强制交接
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!showForceConfirm && (
+              <button
+                className="w-full rounded-lg bg-blue-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                disabled={!nextNurseId || submitting}
+                onClick={() => handleHandover(false)}
+              >
+                {submitting ? '交接中...' : '确认交接'}
+              </button>
+            )}
           </div>
         </div>
       </div>

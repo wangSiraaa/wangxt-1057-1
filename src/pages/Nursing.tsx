@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { Lock, Clock, AlertTriangle } from 'lucide-react'
+import { Lock, Clock, AlertTriangle, AlertCircle, HeartPulse, Plus, X } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
-import { fetchHospitalizationDetail, fetchOrders, fetchNursingRecords, createNursingRecord, fetchStaff } from '@/lib/api'
-import type { HospitalizationDetail, Order, NursingRecord } from 'shared/types'
+import {
+  fetchHospitalizationDetail, fetchOrders, fetchNursingRecords, createNursingRecord, fetchStaff,
+  markCritical, unmarkCritical, fetchCriticalObservations, createCriticalObservation, fetchCurrentShift,
+  supplementCriticalObservation,
+} from '@/lib/api'
+import type { HospitalizationDetail, Order, NursingRecord, CriticalObservation, Shift } from 'shared/types'
 
 const CATEGORY_MAP: Record<Order['category'], string> = {
   medication: '药品', observation: '观察', care: '护理', examination: '检查',
@@ -31,24 +35,51 @@ const emptyExec = (orderId: string): ExecForm => ({
   result: 'normal', observation: '', abnormalNote: '', handoverNote: '',
 })
 
+interface CriticalObsForm {
+  temperature: string
+  heartRate: string
+  respiratoryRate: string
+  bloodPressureSystolic: string
+  bloodPressureDiastolic: string
+  oxygenSaturation: string
+  mentalStatus: string
+  appetite: string
+  clinicalSigns: string
+  intervention: string
+  notes: string
+}
+
+const emptyCriticalObs = (): CriticalObsForm => ({
+  temperature: '', heartRate: '', respiratoryRate: '',
+  bloodPressureSystolic: '', bloodPressureDiastolic: '', oxygenSaturation: '',
+  mentalStatus: '', appetite: '', clinicalSigns: '', intervention: '', notes: '',
+})
+
 export default function Nursing() {
   const { id } = useParams<{ id: string }>()
   const { currentRole, currentStaff, staffList, setStaffList } = useAppStore()
   const [detail, setDetail] = useState<HospitalizationDetail | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
   const [records, setRecords] = useState<NursingRecord[]>([])
+  const [criticalObservations, setCriticalObservations] = useState<CriticalObservation[]>([])
+  const [currentShift, setCurrentShift] = useState<Shift | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [form, setForm] = useState<ExecForm | null>(null)
+  const [criticalForm, setCriticalForm] = useState<CriticalObsForm | null>(null)
+  const [supplementTargetShiftId, setSupplementTargetShiftId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
 
   const loadData = useCallback(async () => {
     if (!id) return
-    const [d, o, r, s] = await Promise.all([
+    const [d, o, r, s, co] = await Promise.all([
       fetchHospitalizationDetail(id), fetchOrders(id), fetchNursingRecords(id),
       staffList.length === 0 ? fetchStaff() : Promise.resolve(staffList),
+      fetchCriticalObservations(id),
     ])
-    setDetail(d); setOrders(o); setRecords(r)
+    setDetail(d); setOrders(o); setRecords(r); setCriticalObservations(co)
     if (Array.isArray(s) && s.length > 0) setStaffList(s)
+    const sh = await fetchCurrentShift().catch(() => null)
+    if (sh) setCurrentShift(sh)
   }, [id, staffList, setStaffList])
 
   useEffect(() => { loadData() }, [loadData])
@@ -100,6 +131,71 @@ export default function Nursing() {
     setSelectedId(null); setForm(null); loadData()
   }
 
+  const handleMarkCritical = async () => {
+    if (!id) return
+    const vetId = currentStaff?.id || staffList.find(s => s.role === 'vet')?.id
+    if (!vetId) { setToast('需兽医标记重症'); setTimeout(() => setToast(''), 2500); return }
+    await markCritical(id, vetId)
+    loadData()
+  }
+
+  const handleUnmarkCritical = async () => {
+    if (!id) return
+    await unmarkCritical(id)
+    loadData()
+  }
+
+  const handleCriticalObsSubmit = async () => {
+    if (!id || !criticalForm || !currentShift) return
+    const nurseId = currentStaff?.id || staffList.find(s => s.role === 'nurse')?.id
+    if (!nurseId) { setToast('需护士记录'); setTimeout(() => setToast(''), 2500); return }
+
+    if (supplementTargetShiftId) {
+      await supplementCriticalObservation(id, {
+        shiftId: currentShift.id,
+        nurseId,
+        supplementForShiftId: supplementTargetShiftId,
+        temperature: criticalForm.temperature ? parseFloat(criticalForm.temperature) : null,
+        heartRate: criticalForm.heartRate ? parseInt(criticalForm.heartRate) : null,
+        respiratoryRate: criticalForm.respiratoryRate ? parseInt(criticalForm.respiratoryRate) : null,
+        bloodPressureSystolic: criticalForm.bloodPressureSystolic ? parseInt(criticalForm.bloodPressureSystolic) : null,
+        bloodPressureDiastolic: criticalForm.bloodPressureDiastolic ? parseInt(criticalForm.bloodPressureDiastolic) : null,
+        oxygenSaturation: criticalForm.oxygenSaturation ? parseFloat(criticalForm.oxygenSaturation) : null,
+        mentalStatus: criticalForm.mentalStatus || null,
+        appetite: criticalForm.appetite || null,
+        clinicalSigns: criticalForm.clinicalSigns || null,
+        intervention: criticalForm.intervention || null,
+        notes: criticalForm.notes || null,
+      })
+      setSupplementTargetShiftId(null)
+    } else {
+      await createCriticalObservation(id, {
+        shiftId: currentShift.id,
+        nurseId,
+        temperature: criticalForm.temperature ? parseFloat(criticalForm.temperature) : null,
+        heartRate: criticalForm.heartRate ? parseInt(criticalForm.heartRate) : null,
+        respiratoryRate: criticalForm.respiratoryRate ? parseInt(criticalForm.respiratoryRate) : null,
+        bloodPressureSystolic: criticalForm.bloodPressureSystolic ? parseInt(criticalForm.bloodPressureSystolic) : null,
+        bloodPressureDiastolic: criticalForm.bloodPressureDiastolic ? parseInt(criticalForm.bloodPressureDiastolic) : null,
+        oxygenSaturation: criticalForm.oxygenSaturation ? parseFloat(criticalForm.oxygenSaturation) : null,
+        mentalStatus: criticalForm.mentalStatus || null,
+        appetite: criticalForm.appetite || null,
+        clinicalSigns: criticalForm.clinicalSigns || null,
+        intervention: criticalForm.intervention || null,
+        notes: criticalForm.notes || null,
+      })
+    }
+    setCriticalForm(null); loadData()
+  }
+
+  const todayCriticalObs = criticalObservations.filter(
+    (o) => o.recordedAt?.slice(0, 10) === new Date().toISOString().slice(0, 10)
+  )
+
+  const shiftObsRecorded = currentShift && criticalObservations.some(
+    (o) => o.shiftId === currentShift.id
+  )
+
   const petBar = h && (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg bg-white px-5 py-3 text-sm shadow-sm">
       <span className="font-semibold text-slate-800">{h.petName}</span>
@@ -110,6 +206,24 @@ export default function Nursing() {
       <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${VACCINE_MAP[h.vaccineStatus]?.cls}`}>
         {VACCINE_MAP[h.vaccineStatus]?.label}
       </span>
+      {h.isCritical ? (
+        <span className="flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-700">
+          <HeartPulse size={12} fill="currentColor" />重症监护
+        </span>
+      ) : null}
+      {h.status === 'admitted' && (canExecute || currentRole === 'vet') && (
+        h.isCritical ? (
+          <button onClick={handleUnmarkCritical}
+            className="ml-auto rounded-md bg-gray-100 px-3 py-1 text-xs text-gray-700 hover:bg-gray-200">
+            取消重症标记
+          </button>
+        ) : (
+          <button onClick={handleMarkCritical}
+            className="ml-auto flex items-center gap-1 rounded-md bg-red-50 px-3 py-1 text-xs text-red-700 hover:bg-red-100">
+            <HeartPulse size={12} />标记为重症
+          </button>
+        )
+      )}
     </div>
   )
 
@@ -248,6 +362,9 @@ export default function Nursing() {
                       <span className={`rounded px-2 py-0.5 text-xs font-medium ${RESULT_MAP[r.result]?.cls}`}>
                         {RESULT_MAP[r.result]?.label}
                       </span>
+                      {r.status === 'terminated' && (
+                        <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600">已终止</span>
+                      )}
                     </div>
                     {r.observation && (
                       <p className="mt-1.5 text-xs text-slate-500">{r.observation}</p>
@@ -257,6 +374,11 @@ export default function Nursing() {
                         <AlertTriangle size={12} />{r.abnormalNote}
                       </p>
                     )}
+                    {r.status === 'terminated' && r.terminatedReason && (
+                      <p className="mt-1 flex items-center gap-1 text-xs text-gray-500">
+                        <X size={12} />终止原因：{r.terminatedReason}
+                      </p>
+                    )}
                   </div>
                 </div>
               )
@@ -264,6 +386,195 @@ export default function Nursing() {
           </div>
         )}
       </div>
+
+      {h?.isCritical && (
+        <div>
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+              <HeartPulse size={14} className="text-red-600" />重症观察记录
+            </h3>
+            <div className="flex items-center gap-2">
+              {!shiftObsRecorded && h.status === 'admitted' && (
+                <span className="flex items-center gap-1 text-xs text-red-600">
+                  <AlertCircle size={12} />本班次未记录
+                </span>
+              )}
+              {shiftObsRecorded && (
+                <span className="flex items-center gap-1 text-xs text-green-600">
+                  本班次已记录
+                </span>
+              )}
+              {canExecute && !shiftObsRecorded && h.status === 'admitted' && !criticalForm && (
+                <button onClick={() => { setSupplementTargetShiftId(null); setCriticalForm(emptyCriticalObs()) }}
+                  className="flex items-center gap-1 rounded-md bg-red-600 px-3 py-1 text-xs text-white hover:bg-red-700">
+                  <Plus size={12} />添加本班观察
+                </button>
+              )}
+            </div>
+          </div>
+
+          {criticalForm && (
+            <div className="rounded-lg bg-white p-4 shadow-sm mb-4">
+              <div className="mb-3 flex items-center gap-2">
+                <h4 className="text-sm font-semibold text-slate-800">
+                  {supplementTargetShiftId ? '补录观察记录' : '新增观察记录'}
+                </h4>
+                {supplementTargetShiftId && (
+                  <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">补录</span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">体温 (°C)</span>
+                  <input type="number" step="0.1" value={criticalForm.temperature}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, temperature: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">心率 (次/分)</span>
+                  <input type="number" value={criticalForm.heartRate}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, heartRate: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">呼吸 (次/分)</span>
+                  <input type="number" value={criticalForm.respiratoryRate}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, respiratoryRate: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">收缩压 (mmHg)</span>
+                  <input type="number" value={criticalForm.bloodPressureSystolic}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, bloodPressureSystolic: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">舒张压 (mmHg)</span>
+                  <input type="number" value={criticalForm.bloodPressureDiastolic}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, bloodPressureDiastolic: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">血氧饱和度 (%)</span>
+                  <input type="number" step="0.1" value={criticalForm.oxygenSaturation}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, oxygenSaturation: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">精神状态</span>
+                  <select value={criticalForm.mentalStatus}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, mentalStatus: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                    <option value="">请选择</option>
+                    <option value="alert">清醒警觉</option>
+                    <option value="depressed">精神沉郁</option>
+                    <option value="obtunded">迟钝</option>
+                    <option value="stupor">昏睡</option>
+                    <option value="comatose">昏迷</option>
+                  </select>
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">食欲</span>
+                  <select value={criticalForm.appetite}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, appetite: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                    <option value="">请选择</option>
+                    <option value="good">正常</option>
+                    <option value="reduced">减少</option>
+                    <option value="poor">差</option>
+                    <option value="none">绝食</option>
+                  </select>
+                </label>
+              </div>
+              <div className="space-y-3">
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">临床症状</span>
+                  <textarea value={criticalForm.clinicalSigns}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, clinicalSigns: e.target.value })} rows={2}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" placeholder="描述观察到的症状" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">处置措施</span>
+                  <textarea value={criticalForm.intervention}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, intervention: e.target.value })} rows={2}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" placeholder="已采取的治疗/护理措施" />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs text-slate-500">备注</span>
+                  <textarea value={criticalForm.notes}
+                    onChange={(e) => setCriticalForm({ ...criticalForm, notes: e.target.value })} rows={2}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </label>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button onClick={() => setCriticalForm(null)}
+                  className="rounded-lg bg-gray-100 px-4 py-2 text-sm text-gray-700 hover:bg-gray-200">
+                  取消
+                </button>
+                <button onClick={handleCriticalObsSubmit}
+                  className="rounded-lg bg-red-600 px-5 py-2 text-sm font-medium text-white hover:bg-red-700">
+                  提交观察记录
+                </button>
+              </div>
+            </div>
+          )}
+
+          {criticalObservations.length === 0 && !criticalForm ? (
+            <div className="rounded-lg bg-white px-4 py-6 text-center text-sm text-slate-400 shadow-sm">暂无重症观察记录</div>
+          ) : (
+            <div className="space-y-2">
+              {criticalObservations
+                .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+                .map((obs) => {
+                  const nurse = staffList.find((s) => s.id === obs.nurseId)
+                  return (
+                    <div key={obs.id} className={`rounded-lg bg-white p-4 shadow-sm border-l-4 ${obs.isSupplement ? 'border-l-amber-400' : 'border-l-red-400'}`}>
+                      <div className="flex items-center gap-3 text-sm mb-2">
+                        <span className="text-slate-500">{obs.recordedAt?.slice(0, 16)}</span>
+                        <span className="font-medium text-slate-700">记录人：{nurse?.name || '未知'}</span>
+                        {obs.isSupplement && (
+                          <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">补录</span>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1 text-xs">
+                        {obs.temperature != null && (
+                          <span><span className="text-slate-500">体温：</span><span className="text-slate-800">{obs.temperature}°C</span></span>
+                        )}
+                        {obs.heartRate != null && (
+                          <span><span className="text-slate-500">心率：</span><span className="text-slate-800">{obs.heartRate} 次/分</span></span>
+                        )}
+                        {obs.respiratoryRate != null && (
+                          <span><span className="text-slate-500">呼吸：</span><span className="text-slate-800">{obs.respiratoryRate} 次/分</span></span>
+                        )}
+                        {obs.bloodPressureSystolic != null && obs.bloodPressureDiastolic != null && (
+                          <span><span className="text-slate-500">血压：</span><span className="text-slate-800">{obs.bloodPressureSystolic}/{obs.bloodPressureDiastolic} mmHg</span></span>
+                        )}
+                        {obs.oxygenSaturation != null && (
+                          <span><span className="text-slate-500">血氧：</span><span className="text-slate-800">{obs.oxygenSaturation}%</span></span>
+                        )}
+                        {obs.mentalStatus && (
+                          <span><span className="text-slate-500">精神：</span><span className="text-slate-800">
+                            {{ alert: '清醒警觉', depressed: '精神沉郁', obtunded: '迟钝', stupor: '昏睡', comatose: '昏迷' } as Record<string, string>}[obs.mentalStatus] || obs.mentalStatus
+                          }</span></span>
+                        )}
+                        {obs.appetite && (
+                          <span><span className="text-slate-500">食欲：</span><span className="text-slate-800">
+                            {{ good: '正常', reduced: '减少', poor: '差', none: '绝食' } as Record<string, string>}[obs.appetite] || obs.appetite
+                          }</span></span>
+                        )}
+                      </div>
+                      <div className="mt-2 space-y-1 text-xs">
+                        {obs.clinicalSigns && <p><span className="text-slate-500">症状：</span><span className="text-slate-700">{obs.clinicalSigns}</span></p>}
+                        {obs.intervention && <p><span className="text-slate-500">处置：</span><span className="text-slate-700">{obs.intervention}</span></p>}
+                        {obs.notes && <p><span className="text-slate-500">备注：</span><span className="text-slate-700">{obs.notes}</span></p>}
+                      </div>
+                    </div>
+                  )
+                })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

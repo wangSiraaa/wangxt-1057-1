@@ -143,8 +143,13 @@ export function getStatistics() {
   let pendingOrdersCount = 0
   let pendingNursingCount = 0
   let alertCount = 0
+  let criticalCount = 0
+  let pendingMedTaskCount = 0
 
   const today = new Date().toISOString().slice(0, 10)
+  const currentShift = db.prepare(
+    "SELECT id FROM shift WHERE status = 'active' ORDER BY start_time DESC LIMIT 1"
+  ).get() as { id: string } | undefined
 
   for (const h of admittedList) {
     const orders = db.prepare(
@@ -168,12 +173,31 @@ export function getStatistics() {
     if (h.vaccine_status === 'incomplete' || depositRemaining <= 0) {
       alertCount++
     }
+
+    if (h.is_critical) {
+      criticalCount++
+      if (currentShift) {
+        const obs = db.prepare(
+          'SELECT id FROM critical_observation WHERE hospitalization_id = ? AND shift_id = ?'
+        ).get(h.id, currentShift.id)
+        if (!obs) {
+          alertCount++
+        }
+      }
+    }
   }
+
+  const medTaskResult = db.prepare(
+    "SELECT COUNT(*) as cnt FROM medication_task WHERE status = 'pending'"
+  ).get() as { cnt: number }
+  pendingMedTaskCount = medTaskResult.cnt
 
   return {
     admittedCount,
     pendingOrdersCount,
     pendingNursingCount,
     alertCount,
+    criticalCount,
+    pendingMedTaskCount,
   }
 }

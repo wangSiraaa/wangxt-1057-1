@@ -38,6 +38,9 @@ export function initDatabase() {
       auth_transfusion INTEGER NOT NULL DEFAULT 0,
       auth_special_exam INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'admitted',
+      is_critical INTEGER NOT NULL DEFAULT 0,
+      critical_marked_by TEXT,
+      critical_marked_at TEXT,
       admitting_vet_id TEXT DEFAULT '',
       admitting_nurse_id TEXT DEFAULT '',
       cage_number TEXT DEFAULT '',
@@ -63,6 +66,10 @@ export function initDatabase() {
       confirmed_by TEXT,
       confirmed_at TEXT,
       status TEXT NOT NULL DEFAULT 'active',
+      medication_name TEXT,
+      medication_quantity REAL DEFAULT 0,
+      medication_stock_available REAL DEFAULT 0,
+      stock_checked INTEGER NOT NULL DEFAULT 0,
       change_reason TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -80,6 +87,10 @@ export function initDatabase() {
       abnormal_note TEXT,
       handover_note TEXT,
       shift_id TEXT,
+      status TEXT NOT NULL DEFAULT 'completed',
+      terminated_reason TEXT,
+      terminated_at TEXT,
+      termination_category TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (hospitalization_id) REFERENCES hospitalization(id),
       FOREIGN KEY (order_id) REFERENCES orders(id),
@@ -94,8 +105,56 @@ export function initDatabase() {
       amount REAL NOT NULL,
       quantity INTEGER NOT NULL DEFAULT 1,
       total_amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'completed',
+      order_id TEXT,
+      nursing_record_id TEXT,
+      terminated_reason TEXT,
+      terminated_at TEXT,
+      termination_category TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (hospitalization_id) REFERENCES hospitalization(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS critical_observation (
+      id TEXT PRIMARY KEY,
+      hospitalization_id TEXT NOT NULL,
+      shift_id TEXT NOT NULL,
+      nurse_id TEXT NOT NULL,
+      temperature REAL,
+      heart_rate INTEGER,
+      respiratory_rate INTEGER,
+      blood_pressure_systolic INTEGER,
+      blood_pressure_diastolic INTEGER,
+      oxygen_saturation REAL,
+      mental_status TEXT,
+      appetite TEXT,
+      clinical_signs TEXT,
+      intervention TEXT,
+      notes TEXT,
+      is_supplement INTEGER NOT NULL DEFAULT 0,
+      supplement_for_shift_id TEXT,
+      recorded_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (hospitalization_id) REFERENCES hospitalization(id),
+      FOREIGN KEY (shift_id) REFERENCES shift(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS medication_task (
+      id TEXT PRIMARY KEY,
+      hospitalization_id TEXT NOT NULL,
+      order_id TEXT NOT NULL,
+      medication_name TEXT NOT NULL,
+      required_quantity REAL NOT NULL,
+      available_quantity REAL NOT NULL,
+      pending_quantity REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      priority TEXT NOT NULL DEFAULT 'normal',
+      assigned_to TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      FOREIGN KEY (hospitalization_id) REFERENCES hospitalization(id),
+      FOREIGN KEY (order_id) REFERENCES orders(id)
     );
 
     CREATE TABLE IF NOT EXISTS shift (
@@ -117,6 +176,38 @@ export function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `)
+
+  const migrations = [
+    {
+      table: 'critical_observation',
+      column: 'is_supplement',
+      ddl: 'ALTER TABLE critical_observation ADD COLUMN is_supplement INTEGER NOT NULL DEFAULT 0',
+    },
+    {
+      table: 'critical_observation',
+      column: 'supplement_for_shift_id',
+      ddl: 'ALTER TABLE critical_observation ADD COLUMN supplement_for_shift_id TEXT',
+    },
+    {
+      table: 'nursing_record',
+      column: 'termination_category',
+      ddl: 'ALTER TABLE nursing_record ADD COLUMN termination_category TEXT',
+    },
+    {
+      table: 'billing_item',
+      column: 'termination_category',
+      ddl: 'ALTER TABLE billing_item ADD COLUMN termination_category TEXT',
+    },
+  ]
+
+  for (const m of migrations) {
+    const colExists = db.prepare(
+      "SELECT COUNT(*) as cnt FROM pragma_table_info(?) WHERE name = ?"
+    ).get(m.table, m.column) as { cnt: number }
+    if (colExists.cnt === 0) {
+      db.exec(m.ddl)
+    }
+  }
 
   const count = db.prepare('SELECT COUNT(*) as cnt FROM staff').get() as { cnt: number }
   let nurseId = ''

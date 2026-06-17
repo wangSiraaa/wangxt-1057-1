@@ -15,6 +15,9 @@ export interface Hospitalization {
   authTransfusion: boolean
   authSpecialExam: boolean
   status: 'admitted' | 'discharged'
+  isCritical: boolean
+  criticalMarkedBy: string | null
+  criticalMarkedAt: string | null
   admittingVetId: string
   admittingNurseId: string
   cageNumber: string
@@ -40,6 +43,10 @@ export interface Order {
   confirmedBy: string | null
   confirmedAt: string | null
   status: 'active' | 'stopped' | 'completed'
+  medicationName: string | null
+  medicationQuantity: number
+  medicationStockAvailable: number
+  stockChecked: boolean
   changeReason: string | null
   createdAt: string
   updatedAt: string
@@ -56,6 +63,10 @@ export interface NursingRecord {
   abnormalNote: string | null
   handoverNote: string | null
   shiftId: string
+  status: 'completed' | 'terminated'
+  terminatedReason: string | null
+  terminatedAt: string | null
+  terminationCategory: 'early_discharge' | 'clinical_decision' | 'other' | null
   createdAt: string
 }
 
@@ -67,6 +78,12 @@ export interface BillingItem {
   amount: number
   quantity: number
   totalAmount: number
+  status: 'completed' | 'terminated'
+  orderId: string | null
+  nursingRecordId: string | null
+  terminatedReason: string | null
+  terminatedAt: string | null
+  terminationCategory: 'early_discharge' | 'clinical_decision' | 'other' | null
   createdAt: string
 }
 
@@ -101,8 +118,106 @@ export interface Staff {
   createdAt: string
 }
 
+export interface CriticalObservation {
+  id: string
+  hospitalizationId: string
+  shiftId: string
+  nurseId: string
+  temperature: number | null
+  heartRate: number | null
+  respiratoryRate: number | null
+  bloodPressureSystolic: number | null
+  bloodPressureDiastolic: number | null
+  oxygenSaturation: number | null
+  mentalStatus: string | null
+  appetite: string | null
+  clinicalSigns: string | null
+  intervention: string | null
+  notes: string | null
+  isSupplement: boolean
+  supplementForShiftId: string | null
+  recordedAt: string
+  createdAt: string
+}
+
+export interface MedicationTask {
+  id: string
+  hospitalizationId: string
+  orderId: string
+  medicationName: string
+  requiredQuantity: number
+  availableQuantity: number
+  pendingQuantity: number
+  status: 'pending' | 'completed' | 'cancelled'
+  priority: 'normal' | 'urgent'
+  assignedTo: string | null
+  notes: string | null
+  createdAt: string
+  completedAt: string | null
+}
+
+export interface HandoverChecklistItem {
+  type: string
+  id: string
+  name: string
+  status: string
+  message: string
+}
+
+export interface HandoverChecklist {
+  criticalObservations: {
+    criticalCount: number
+    missingCount: number
+    missingPets: { id: string; petName: string }[]
+  }
+  previousShiftMissing: {
+    shiftId: string | null
+    missingCount: number
+    missingPets: { id: string; petName: string }[]
+  }
+  pendingOrders: {
+    count: number
+    items: any[]
+  }
+  pendingMedicationTasks: {
+    count: number
+    items: any[]
+  }
+  canHandover: boolean
+}
+
+export interface DischargeClosureSummary {
+  hospitalization: Hospitalization
+  summary: {
+    orderCount: number
+    nursingCompletedCount: number
+    nursingTerminatedCount: number
+    nursingEarlyDischargeCount: number
+    nursingClinicalTerminatedCount: number
+    billingCompletedCount: number
+    billingTerminatedCount: number
+    billingEarlyDischargeCount: number
+    billingClinicalTerminatedCount: number
+    pendingMedicationTaskCount: number
+    unclosedItemCount: number
+  }
+  completedNursing: NursingRecord[]
+  terminatedNursing: NursingRecord[]
+  earlyDischargeNursing: NursingRecord[]
+  clinicalTerminatedNursing: NursingRecord[]
+  completedBilling: BillingItem[]
+  terminatedBilling: BillingItem[]
+  earlyDischargeBilling: BillingItem[]
+  clinicalTerminatedBilling: BillingItem[]
+  pendingMedicationTasks: MedicationTask[]
+  unclosedItems: HandoverChecklistItem[]
+  canDischarge: boolean
+}
+
 export interface HospitalizationDetail extends Hospitalization {
   orders: Order[]
   nursingRecords: NursingRecord[]
   billingItems: BillingItem[]
+  criticalObservations: CriticalObservation[]
+  medicationTasks: MedicationTask[]
 }

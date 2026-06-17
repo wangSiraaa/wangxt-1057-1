@@ -1,10 +1,12 @@
 import db from '../db.js'
 import crypto from 'crypto'
+import { getMissingObservationsForShift, checkCriticalObservationForShift } from './criticalCareService.js'
 
 export interface HandoverInput {
   nurse_on_duty: string
   nurse_off_duty: string
   handover_notes?: string
+  force_handover?: boolean
 }
 
 export function getCurrentShift() {
@@ -20,12 +22,79 @@ export function getCurrentShift() {
   return { ...shift, nursing_records: records }
 }
 
+export function getHandoverChecklist(shiftId: string) {
+  const criticalCheck = checkCriticalObservationForShift(shiftId)
+
+  const previousShift = db.prepare(
+    "SELECT * FROM shift WHERE status = 'handed_over' ORDER BY end_time DESC LIMIT 1"
+  ).get() as any
+
+  let previousShiftMissing: any[] = []
+  if (previousShift) {
+    previousShiftMissing = getMissingObservationsForShift(previousShift.id)
+  }
+
+  const pendingOrders = db.prepare(`
+    SELECT o.*, h.pet_name 
+    FROM orders o 
+    JOIN hospitalization h ON o.hospitalization_id = h.id 
+    WHERE o.status = 'active' AND o.confirmed = 1
+    AND h.status = 'admitted'
+    AND NOT EXISTS (
+      SELECT 1 FROM nursing_record nr 
+      WHERE nr.order_id = o.id AND nr.shift_id = ? AND nr.status = 'completed'
+    )
+  `).all(shiftId) as any[]
+
+  const pendingMedTasks = db.prepare(`
+    SELECT mt.*, h.pet_name 
+    FROM medication_task mt
+    JOIN hospitalization h ON mt.hospitalization_id = h.id
+    WHERE mt.status = 'pending'
+  `).all() as any[]
+
+  return {
+    criticalObservations: criticalCheck,
+    previousShiftMissing: {
+      shiftId: previousShift?.id ?? null,
+      missingCount: previousShiftMissing.length,
+      missingPets: previousShiftMissing,
+    },
+    pendingOrders: {
+      count: pendingOrders.length,
+      items: pendingOrders,
+    },
+    pendingMedicationTasks: {
+      count: pendingMedTasks.length,
+      items: pendingMedTasks,
+    },
+    canHandover: criticalCheck.missingCount === 0 && previousShiftMissing.length === 0,
+  }
+}
+
 export function handover(input: HandoverInput) {
   const now = new Date().toISOString()
 
   const currentShift = db.prepare(
     "SELECT * FROM shift WHERE status = 'active' ORDER BY start_time DESC LIMIT 1"
   ).get() as any
+
+  if (currentShift && !input.force_handover) {
+    const checklist = getHandoverChecklist(currentShift.id)
+    if (!checklist.canHandover) {
+      const reasons: string[] = []
+      if (checklist.criticalObservations.missingCount > 0) {
+        reasons.push(`${checklist.criticalObservations.missingCount}只重症宠物本班次未填写观察记录`)
+      }
+      if (checklist.previousShiftMissing.missingCount > 0) {
+        reasons.push(`${checklist.previousShiftMissing.missingCount}只重症宠物上班次观察记录缺失未补录`)
+      }
+      return {
+        error: `无法交接：${reasons.join('；')}。请先补录后再交接`,
+        checklist,
+      }
+    }
+  }
 
   if (currentShift) {
     db.prepare(

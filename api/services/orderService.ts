@@ -1,5 +1,6 @@
 import db from '../db.js'
 import crypto from 'crypto'
+import { checkStockAndCreateTask } from './medicationTaskService.js'
 
 export interface OrderInput {
   vet_id: string
@@ -70,7 +71,7 @@ export function updateOrder(orderId: string, input: Partial<OrderInput>) {
   return db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId)
 }
 
-export function confirmOrder(orderId: string, confirmedBy: string) {
+export function confirmOrder(orderId: string, confirmedBy: string, stockQuantity?: number) {
   const existing = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any
   if (!existing) return null
   if (existing.confirmed) return { error: '该医嘱已确认' }
@@ -80,7 +81,22 @@ export function confirmOrder(orderId: string, confirmedBy: string) {
     'UPDATE orders SET confirmed = 1, confirmed_by = ?, confirmed_at = ?, updated_at = ? WHERE id = ?'
   ).run(confirmedBy, now, now, orderId)
 
-  return db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId)
+  let medicationTask: any = null
+  if (existing.category === 'medication' && existing.medication_name && existing.medication_quantity > 0) {
+    const stockQty = stockQuantity ?? existing.medication_stock_available ?? 0
+    const result = checkStockAndCreateTask(
+      orderId,
+      existing.medication_name,
+      existing.medication_quantity,
+      stockQty
+    ) as any
+    if (result && !result.sufficient && result.task) {
+      medicationTask = result.task
+    }
+  }
+
+  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId)
+  return { order, medicationTask }
 }
 
 export function stopOrder(orderId: string, reason?: string) {

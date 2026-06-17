@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { Plus, Check, Ban, Pencil, X } from 'lucide-react'
+import { Plus, Check, Ban, Pencil, X, Pill, AlertTriangle, CheckCircle } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
-import { fetchHospitalizationDetail, fetchOrders, createOrder, confirmOrder, stopOrder, updateOrder, fetchStaff } from '@/lib/api'
-import type { HospitalizationDetail, Order } from 'shared/types'
+import {
+  fetchHospitalizationDetail, fetchOrders, createOrder, confirmOrder, stopOrder, updateOrder, fetchStaff,
+  fetchHospitalMedicationTasks, completeMedicationTask, checkOrderStock,
+} from '@/lib/api'
+import type { HospitalizationDetail, Order, MedicationTask } from 'shared/types'
 
 type TabKey = Order['type']
 
@@ -27,14 +30,22 @@ const VACCINE_MAP: Record<string, { label: string; cls: string }> = {
   unknown: { label: '疫苗未知', cls: 'bg-gray-100 text-gray-600' },
 }
 
+const TASK_STATUS_MAP: Record<MedicationTask['status'], { label: string; cls: string }> = {
+  pending: { label: '待补药', cls: 'bg-amber-100 text-amber-700' },
+  completed: { label: '已完成', cls: 'bg-green-100 text-green-700' },
+  cancelled: { label: '已取消', cls: 'bg-gray-100 text-gray-600' },
+}
+
 interface FormData {
   type: Order['type']; category: Order['category']; content: string
   dosage: string; frequency: string; startDate: string
+  medicationName: string; medicationQuantity: string; medicationStockAvailable: string
 }
 
 const emptyForm = (): FormData => ({
   type: 'long_term', category: 'medication', content: '',
   dosage: '', frequency: '', startDate: new Date().toISOString().slice(0, 10),
+  medicationName: '', medicationQuantity: '', medicationStockAvailable: '',
 })
 
 export default function Orders() {
@@ -42,20 +53,23 @@ export default function Orders() {
   const { currentRole, currentStaff, staffList, setStaffList } = useAppStore()
   const [detail, setDetail] = useState<HospitalizationDetail | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
+  const [medTasks, setMedTasks] = useState<MedicationTask[]>([])
   const [tab, setTab] = useState<TabKey>('long_term')
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState<FormData>(emptyForm())
   const [stopTarget, setStopTarget] = useState<Order | null>(null)
   const [editTarget, setEditTarget] = useState<Order | null>(null)
   const [editContent, setEditContent] = useState('')
+  const [toast, setToast] = useState('')
 
   const loadData = useCallback(async () => {
     if (!id) return
-    const [d, o, s] = await Promise.all([
+    const [d, o, s, mt] = await Promise.all([
       fetchHospitalizationDetail(id), fetchOrders(id),
       staffList.length === 0 ? fetchStaff() : Promise.resolve(staffList),
+      fetchHospitalMedicationTasks(id),
     ])
-    setDetail(d); setOrders(o)
+    setDetail(d); setOrders(o); setMedTasks(mt)
     if (Array.isArray(s) && s.length > 0) setStaffList(s)
   }, [id, staffList, setStaffList])
 
@@ -64,23 +78,48 @@ export default function Orders() {
   const h = detail
   const filtered = orders.filter((o) => o.type === tab)
   const isVet = currentRole === 'vet'
+  const pendingTasks = medTasks.filter((t) => t.status === 'pending')
 
   const handleAdd = async () => {
     if (!id) return
     const vetId = currentStaff?.id || staffList.find(s => s.role === 'vet')?.id || ''
-    await createOrder(id, {
+    const order = await createOrder(id, {
       vetId,
       type: form.type, category: form.category, content: form.content,
       dosage: form.category === 'medication' ? form.dosage : '',
       frequency: form.type === 'long_term' ? form.frequency : '',
       startDate: form.startDate, status: 'active', confirmed: form.type !== 'pending_confirm',
+      medicationName: form.category === 'medication' ? form.medicationName || null : null,
+      medicationQuantity: form.category === 'medication' && form.medicationQuantity ? parseFloat(form.medicationQuantity) : 0,
+      medicationStockAvailable: form.category === 'medication' && form.medicationStockAvailable ? parseFloat(form.medicationStockAvailable) : 0,
+      stockChecked: form.category === 'medication' && form.medicationStockAvailable !== '',
     })
+    if (form.category === 'medication' && order && form.medicationName && form.medicationQuantity && form.medicationStockAvailable !== '') {
+      try {
+        const result = await checkOrderStock(order.id, form.medicationName, parseFloat(form.medicationQuantity), parseFloat(form.medicationStockAvailable)) as any
+        if (!result?.sufficient && result?.task) {
+          setToast(`已创建补药任务：${form.medicationName} 需补 ${result.task.pendingQuantity}`)
+          setTimeout(() => setToast(''), 4000)
+        }
+      } catch {}
+    }
     setShowAdd(false); setForm(emptyForm()); loadData()
   }
 
   const handleConfirm = async (orderId: string) => {
     const vetId = currentStaff?.id || staffList.find(s => s.role === 'vet')?.id || ''
-    await confirmOrder(orderId, vetId); loadData()
+    try {
+      const result = await confirmOrder(orderId, vetId) as any
+      if (result?.medicationTask) {
+        const task = result.medicationTask
+        setToast(`库存不足，已自动创建补药任务：${task.medicationName || '药品'} 需补 ${task.pendingQuantity}`)
+        setTimeout(() => setToast(''), 5000)
+      }
+    } catch (e: any) {
+      setToast(e?.message || '确认失败')
+      setTimeout(() => setToast(''), 3000)
+    }
+    loadData()
   }
 
   const handleStop = async () => {
@@ -93,6 +132,12 @@ export default function Orders() {
     if (!editTarget) return
     await updateOrder(editTarget.id, { content: editContent })
     setEditTarget(null); setEditContent(''); loadData()
+  }
+
+  const handleCompleteTask = async (taskId: string) => {
+    const notes = prompt('补药完成备注（可选）：') || undefined
+    await completeMedicationTask(taskId, notes)
+    loadData()
   }
 
   const petBar = h && (
@@ -131,6 +176,43 @@ export default function Orders() {
       </nav>
 
       {petBar}
+
+      {toast && (
+        <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-4 py-2 text-sm text-amber-700 border border-amber-200">
+          <AlertTriangle size={16} />{toast}
+        </div>
+      )}
+
+      {pendingTasks.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-800">
+            <Pill size={16} />待补药任务（{pendingTasks.length}）
+          </h3>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {pendingTasks.map((t) => (
+              <div key={t.id} className="rounded-md border border-amber-200 bg-white p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-1 text-sm font-medium text-slate-800">
+                      {t.medicationName}
+                      {t.priority === 'urgent' && (
+                        <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white">紧急</span>
+                      )}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      需补 {t.pendingQuantity}（可用 {t.availableQuantity}/{t.requiredQuantity}）
+                    </p>
+                  </div>
+                  <button onClick={() => handleCompleteTask(t.id)}
+                    className="shrink-0 flex items-center gap-1 rounded bg-green-50 px-2 py-1 text-xs font-medium text-green-700 hover:bg-green-100">
+                    <CheckCircle size={12} />完成
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-4">
         <div className="flex rounded-lg bg-white shadow-sm overflow-hidden">
@@ -236,11 +318,37 @@ export default function Orders() {
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </label>
               {form.category === 'medication' && (
-                <label>
-                  <span className="mb-1 block text-xs text-slate-500">剂量</span>
-                  <input value={form.dosage} onChange={(e) => setForm({ ...form, dosage: e.target.value })}
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                </label>
+                <>
+                  <label>
+                    <span className="mb-1 block text-xs text-slate-500">剂量</span>
+                    <input value={form.dosage} onChange={(e) => setForm({ ...form, dosage: e.target.value })}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label>
+                      <span className="mb-1 block text-xs text-slate-500">药品名称</span>
+                      <input value={form.medicationName} onChange={(e) => setForm({ ...form, medicationName: e.target.value })} placeholder="如：阿莫西林"
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                    </label>
+                    <div />
+                    <label>
+                      <span className="mb-1 block text-xs text-slate-500">医嘱用量</span>
+                      <input type="number" step="0.1" value={form.medicationQuantity} onChange={(e) => setForm({ ...form, medicationQuantity: e.target.value })} placeholder="总用量"
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                    </label>
+                    <label>
+                      <span className="mb-1 block text-xs text-slate-500">当前库存</span>
+                      <input type="number" step="0.1" value={form.medicationStockAvailable} onChange={(e) => setForm({ ...form, medicationStockAvailable: e.target.value })} placeholder="药房当前库存"
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                    </label>
+                  </div>
+                  {form.medicationQuantity && form.medicationStockAvailable && parseFloat(form.medicationStockAvailable) < parseFloat(form.medicationQuantity) && (
+                    <div className="flex items-center gap-1 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                      <AlertTriangle size={12} />
+                      库存不足（库存 {form.medicationStockAvailable} < 用量 {form.medicationQuantity}），系统将自动创建补药任务
+                    </div>
+                  )}
+                </>
               )}
               {form.type === 'long_term' && (
                 <label>

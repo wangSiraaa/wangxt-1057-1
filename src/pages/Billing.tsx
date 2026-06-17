@@ -1,14 +1,18 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ChevronRight, ChevronDown, ChevronUp, Plus, AlertCircle } from 'lucide-react'
+import { ChevronRight, ChevronDown, ChevronUp, Plus, AlertCircle, CheckCircle2, XCircle, Info } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import {
   fetchHospitalizationDetail,
   fetchBilling,
   createBillingItem,
   settleBilling,
+  fetchDischargeClosureSummary,
+  terminateNursingRecord,
+  terminateBillingItem,
+  fetchNursingRecords,
 } from '@/lib/api'
-import type { HospitalizationDetail, BillingItem } from 'shared/types'
+import type { HospitalizationDetail, BillingItem, DischargeClosureSummary, NursingRecord } from 'shared/types'
 
 type Category = BillingItem['category']
 const CATEGORIES: { key: Category; label: string }[] = [
@@ -18,6 +22,12 @@ const CATEGORIES: { key: Category; label: string }[] = [
   { key: 'examination', label: '检查费' },
   { key: 'other', label: '其他' },
 ]
+
+const STATUS_MAP: Record<string, { label: string; className: string; icon: any }> = {
+  completed: { label: '已完成', className: 'bg-green-100 text-green-700', icon: CheckCircle2 },
+  terminated: { label: '已终止', className: 'bg-slate-200 text-slate-600', icon: XCircle },
+  pending: { label: '进行中', className: 'bg-amber-100 text-amber-700', icon: Info },
+}
 
 interface AddForm {
   category: Category
@@ -33,6 +43,8 @@ export default function Billing() {
 
   const [detail, setDetail] = useState<HospitalizationDetail | null>(null)
   const [items, setItems] = useState<BillingItem[]>([])
+  const [nursingRecords, setNursingRecords] = useState<NursingRecord[]>([])
+  const [closureSummary, setClosureSummary] = useState<DischargeClosureSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<Set<Category>>(new Set())
@@ -47,18 +59,24 @@ export default function Billing() {
   const [showSettle, setShowSettle] = useState(false)
   const [settling, setSettling] = useState(false)
   const [settleError, setSettleError] = useState('')
+  const [earlyDischarge, setEarlyDischarge] = useState(false)
+  const [earlyDischargeReason, setEarlyDischargeReason] = useState('')
 
   const load = async () => {
     if (!id) return
     setLoading(true)
     try {
-      const [d, b] = await Promise.all([
+      const [d, b, n, c] = await Promise.all([
         fetchHospitalizationDetail(id),
         fetchBilling(id),
+        fetchNursingRecords(id),
+        fetchDischargeClosureSummary(id),
       ])
       setDetail(d)
       setItems(b)
-      setExpanded(new Set(CATEGORIES.filter((c) => b.some((i) => i.category === c.key)).map((c) => c.key)))
+      setNursingRecords(n)
+      setClosureSummary(c)
+      setExpanded(new Set(CATEGORIES.filter((cat) => b.some((i) => i.category === cat.key)).map((cat) => cat.key)))
     } catch {
       setError('获取数据失败')
     } finally {
@@ -84,6 +102,9 @@ export default function Billing() {
       : depositWarning === 'low'
         ? 'bg-yellow-500'
         : 'bg-green-500'
+
+  const pendingNursing = nursingRecords.filter((r) => r.status !== 'completed')
+  const pendingBilling = items.filter((i) => i.status === 'pending')
 
   const toggleCategory = (key: Category) => {
     setExpanded((prev) => {
@@ -114,12 +135,26 @@ export default function Billing() {
     }
   }
 
+  const handleTerminateNursing = async (recordId: string, category?: string) => {
+    const reason = prompt('请输入终止原因：')
+    if (!reason) return
+    await terminateNursingRecord(recordId, reason, category)
+    load()
+  }
+
+  const handleTerminateBilling = async (itemId: string, category?: string) => {
+    const reason = prompt('请输入终止原因：')
+    if (!reason) return
+    await terminateBillingItem(itemId, reason, category)
+    load()
+  }
+
   const handleSettle = async () => {
     if (!id) return
     setSettling(true)
     setSettleError('')
     try {
-      await settleBilling(id)
+      await settleBilling(id, earlyDischarge && earlyDischargeReason ? earlyDischargeReason : undefined)
       navigate('/')
     } catch (e: unknown) {
       setSettleError(e instanceof Error ? e.message : '结算失败')
@@ -164,7 +199,7 @@ export default function Billing() {
         </div>
       )}
 
-      <div className="mt-4 flex items-center gap-4 rounded-lg border border-slate-200 bg-white px-5 py-3">
+      <div className="mt-4 flex flex-wrap items-center gap-4 rounded-lg border border-slate-200 bg-white px-5 py-3">
         <div className="text-sm">
           <span className="text-slate-500">宠物：</span>
           <span className="font-medium text-slate-800">{detail.petName}</span>
@@ -182,6 +217,121 @@ export default function Billing() {
           <span className="text-slate-700">{detail.cageNumber}</span>
         </div>
       </div>
+
+      {closureSummary && (closureSummary.summary.unclosedItemCount > 0 || closureSummary.summary.nursingTerminatedCount > 0 || closureSummary.summary.billingTerminatedCount > 0) && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-800">
+            <AlertCircle size={16} />出院前未闭环事项
+          </h3>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-md border border-amber-200 bg-white p-3">
+              <p className="text-xs text-slate-500">待补药任务</p>
+              <p className={`mt-1 text-xl font-bold ${closureSummary.summary.pendingMedicationTaskCount > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {closureSummary.summary.pendingMedicationTaskCount} 项
+              </p>
+            </div>
+            <div className="rounded-md border border-amber-200 bg-white p-3">
+              <p className="text-xs text-slate-500">未完成护理</p>
+              <p className={`mt-1 text-xl font-bold ${closureSummary.summary.nursingCompletedCount < (closureSummary.summary.orderCount) ? 'text-red-600' : 'text-green-600'}`}>
+                {closureSummary.summary.nursingCompletedCount} / {closureSummary.summary.orderCount}
+              </p>
+            </div>
+            <div className="rounded-md border border-amber-200 bg-white p-3">
+              <p className="text-xs text-slate-500">提前接回终止</p>
+              <p className={`mt-1 text-xl font-bold ${closureSummary.summary.nursingEarlyDischargeCount > 0 || closureSummary.summary.billingEarlyDischargeCount > 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                {closureSummary.summary.nursingEarlyDischargeCount + closureSummary.summary.billingEarlyDischargeCount} 项
+              </p>
+            </div>
+            <div className="rounded-md border border-amber-200 bg-white p-3">
+              <p className="text-xs text-slate-500">临床终止</p>
+              <p className="mt-1 text-xl font-bold text-slate-600">
+                {closureSummary.summary.nursingClinicalTerminatedCount + closureSummary.summary.billingClinicalTerminatedCount} 项
+              </p>
+            </div>
+          </div>
+          {closureSummary.unclosedItems && closureSummary.unclosedItems.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {closureSummary.unclosedItems.slice(0, 8).map((item) => (
+                <div key={item.id} className="flex items-center gap-2 rounded bg-white/60 px-3 py-1.5 text-xs">
+                  <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700">{item.type}</span>
+                  <span className="text-slate-700">{item.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {closureSummary.earlyDischargeNursing && closureSummary.earlyDischargeNursing.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1 text-xs font-medium text-orange-700">提前接回终止的护理：</p>
+              <div className="space-y-1">
+                {closureSummary.earlyDischargeNursing.map((r) => (
+                  <div key={r.id} className="flex items-center gap-2 rounded bg-orange-50 px-3 py-1.5 text-xs">
+                    <span className="rounded bg-orange-200 px-1.5 py-0.5 text-orange-800">提前接回</span>
+                    <span className="text-slate-700">{r.terminatedReason}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {closureSummary.clinicalTerminatedNursing && closureSummary.clinicalTerminatedNursing.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1 text-xs font-medium text-slate-600">临床原因终止的护理：</p>
+              <div className="space-y-1">
+                {closureSummary.clinicalTerminatedNursing.map((r) => (
+                  <div key={r.id} className="flex items-center gap-2 rounded bg-slate-50 px-3 py-1.5 text-xs">
+                    <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">临床终止</span>
+                    <span className="text-slate-700">{r.terminatedReason}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {pendingNursing.length > 0 && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-white p-4">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-800">
+            <Info size={16} />待处理护理记录（{pendingNursing.length}项）
+          </h3>
+          <div className="space-y-2">
+            {pendingNursing.map((r) => (
+              <div key={r.id} className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50/50 px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center gap-2 text-sm text-slate-800">
+                    <span className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${STATUS_MAP[r.status || 'pending'].className}`}>
+                      {(() => { const I = STATUS_MAP[r.status || 'pending'].icon; return <I size={12} /> })()}
+                      {STATUS_MAP[r.status || 'pending'].label}
+                    </span>
+                    {r.typeName} - {r.content}
+                  </p>
+                  {r.terminatedReason && (
+                    <p className="mt-0.5 text-xs text-slate-500">终止原因：{r.terminatedReason}</p>
+                  )}
+                </div>
+                {r.status !== 'completed' && r.status !== 'terminated' && (
+                  <div className="flex shrink-0 gap-1">
+                    <button onClick={() => handleTerminateNursing(r.id, 'early_discharge')}
+                      className="rounded border border-orange-300 px-2 py-1 text-xs text-orange-600 hover:bg-orange-50">
+                      提前接回
+                    </button>
+                    <button onClick={() => handleTerminateNursing(r.id, 'clinical_decision')}
+                      className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+                      临床终止
+                    </button>
+                  </div>
+                )}
+                {r.status === 'terminated' && r.terminationCategory && (
+                  <span className={`shrink-0 rounded px-2 py-1 text-xs ${
+                    r.terminationCategory === 'early_discharge' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {r.terminationCategory === 'early_discharge' ? '提前接回' : r.terminationCategory === 'clinical_decision' ? '临床终止' : '其他'}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mt-4 rounded-lg border border-slate-200 bg-white px-5 py-4">
         <div className="mb-2 flex items-center justify-between text-sm">
