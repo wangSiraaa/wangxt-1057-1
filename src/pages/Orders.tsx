@@ -345,7 +345,7 @@ export default function Orders() {
                   {form.medicationQuantity && form.medicationStockAvailable && parseFloat(form.medicationStockAvailable) < parseFloat(form.medicationQuantity) && (
                     <div className="flex items-center gap-1 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
                       <AlertTriangle size={12} />
-                      库存不足（库存 {form.medicationStockAvailable} < 用量 {form.medicationQuantity}），系统将自动创建补药任务
+                      库存不足（库存 {form.medicationStockAvailable} {'<'} 用量 {form.medicationQuantity}），系统将自动创建补药任务
                     </div>
                   )}
                 </>

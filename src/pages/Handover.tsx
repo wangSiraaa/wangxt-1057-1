@@ -240,7 +240,7 @@ export default function Handover() {
                   ))}
                 </div>
               </div>
-            )
+            )}
 
             {pendingMedTasks.length > 0 && (
               <div>

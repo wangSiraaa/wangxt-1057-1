@@ -554,13 +554,13 @@ export default function Nursing() {
                         )}
                         {obs.mentalStatus && (
                           <span><span className="text-slate-500">精神：</span><span className="text-slate-800">
-                            {{ alert: '清醒警觉', depressed: '精神沉郁', obtunded: '迟钝', stupor: '昏睡', comatose: '昏迷' } as Record<string, string>}[obs.mentalStatus] || obs.mentalStatus
-                          }</span></span>
+                            {({ alert: '清醒警觉', depressed: '精神沉郁', obtunded: '迟钝', stupor: '昏睡', comatose: '昏迷' } as Record<string, string>)[obs.mentalStatus] || obs.mentalStatus}
+                          </span></span>
                         )}
                         {obs.appetite && (
                           <span><span className="text-slate-500">食欲：</span><span className="text-slate-800">
-                            {{ good: '正常', reduced: '减少', poor: '差', none: '绝食' } as Record<string, string>}[obs.appetite] || obs.appetite
-                          }</span></span>
+                            {({ good: '正常', reduced: '减少', poor: '差', none: '绝食' } as Record<string, string>)[obs.appetite] || obs.appetite}
+                          </span></span>
                         )}
                       </div>
                       <div className="mt-2 space-y-1 text-xs">
